@@ -1,0 +1,194 @@
+<html>
+<head>
+  <title>asperadashboard</title>
+  <link type="text/css" rel="stylesheet" href="/static/css/mystyles.css" />
+  <script src="//ajax.googleapis.com/ajax/libs/jquery/1.8.1/jquery.min.js"></script>
+  <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+  <script type="text/javascript">
+
+// Needed to load google charts
+google.charts.load('current', {packages: ['corechart', 'table', 'controls']});
+
+// Array of the app names, If you need to add a new app to display,
+// you only need to add the names here
+APPS = [{
+  "name": 'Files', "ios": 1032109615, "android": 'com.asperasoft.android.files'
+}, {
+  "name": 'Drive', "ios": 944090390, "android": 'com.asperasoft.android.drive'
+}, {
+  "name": 'Faspex', "ios": 516385262, "android": 'com.asperasoft.faspex'
+}, {
+  "name": 'Uploader', "ios": 386453811, "android": 'com.asperasoft.android.uploader'
+}];
+chart_names = ['Totals', 'Aggregate', 'Drive', 'Files', 'Faspex', 'Uploader']
+
+// Counter needed to autopopulate divs
+htmlcounter = 0;
+
+document.onreadystatechange = function () {
+  if (document.readyState == "interactive") {
+    for (var i = 2; i < chart_names.length; i += 1) {
+      createHTML(chart_names[i]);
+    }
+  }
+}
+
+//Sets the graphs to retrieve data and update every hour
+function run() {
+  setInterval(function() {
+    getData(APPS);
+  }, 360000);
+  getData(APPS);
+}
+
+run();
+
+//sends a post back to the python script to get the associated data
+function getData(app) {
+    var ajaxCall = function(app) {
+        $.ajax({
+            type: "POST",
+            url: "/getdata/",
+            dataType: "json",
+            data: JSON.stringify(app)
+        }).done(function(data) {
+
+          if (document.getElementById("load") != null) {
+            document.getElementById("load").remove();
+          }
+          for (var i = 1; i < chart_names.length; i += 1) {
+              name = chart_names[i];
+              google.charts.setOnLoadCallback(function() {
+                  drawChart(name, data[name]);
+              });
+          }
+          google.charts.setOnLoadCallback(function() {
+            drawTable("Totals", data["Totals"]);
+          });   
+
+        });
+    };
+    ajaxCall(app);
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+   console.log('document is ready. I can sleep now');
+});
+
+
+function drawTable(name, data) {
+  if (document.getElementById("total").style.display="none") {
+    document.getElementById("total").style.display="block";
+  }
+  var table = new google.visualization.Table(document.getElementById('chart_' + name));
+  table.draw(new google.visualization.DataTable(data), {width: '100%', height: '50%'});
+}
+
+// Draws the chart! Finally!
+function drawChart(name, data) {
+
+  //This creates the slider 
+  var programmaticSlider = new google.visualization.ControlWrapper({
+          'controlType': 'ChartRangeFilter',
+          'containerId': 'control_' + name,
+          'options': {
+            'filterColumnLabel': 'Date',
+            'ui': {
+              'chartType': 'LineChart',
+              'snapToData': true,
+              'chartOptions': {
+                'width': 550,
+                'height': 100
+                // 'chartArea': {'height': '50%', 'width': '95%'}
+              }
+            }
+          },
+          'state':{'range':{'start': new Date(2016, 5, 29), 'end': new Date()}}
+        });
+
+  //This creates the chart, many more options are avaialble if you look online
+  var programmaticChart  = new google.visualization.ChartWrapper({
+          'chartType': 'LineChart',
+          'containerId': 'chart_' + name,
+          'options': {
+            'width': 550,
+            'height': 300,
+            'chartArea': {  width: "80%", height: "70%" },
+            'title': name,
+            'titleTextStyle': { 'fontSize': 16},
+            'vAxis': {
+              'format': '',
+              'title': 'Units'
+            },
+            'legend': {'position': 'top'},
+            'focusTarget': 'category'
+          }
+        });
+
+
+    //This creates the dashboard that connects the slider to the grpah
+  var dashboard = new google.visualization.Dashboard(document.getElementById("dashboard_" + name));
+  dashboard.bind(programmaticSlider, programmaticChart);
+  dashboard.draw(data);
+}
+
+//Autopopulates the table, table cell, and the div to hold the dashboards
+function createHTML(name) {
+  var table = document.getElementById("mytable");
+  if (htmlcounter % 2 === 0) {
+    var row = table.insertRow(Math.floor(htmlcounter / 2));
+  } else if (htmlcounter % 2 === 1) {
+    var row = table.rows[Math.floor(htmlcounter / 2)];
+  }
+  
+  dashboarddiv = document.createElement("div");
+  dashboarddiv.id = "dashboard_" + name;
+  dashboarddiv.setAttribute("style", "border:1px solid #ccc;");
+
+  chartdiv = document.createElement("div");
+  chartdiv.id = "chart_" + name;
+  controldiv = document.createElement("div");
+  controldiv.id = "control_" +name;
+
+  dashboarddiv.appendChild(chartdiv);
+  dashboarddiv.appendChild(controldiv);
+
+  tablecell = document.createElement("td");
+  tablecell.setAttribute("align", "center");
+  tablecell.appendChild(dashboarddiv);
+  row.appendChild(tablecell);
+  
+
+  htmlcounter++;
+}
+
+
+  </script>
+</head>
+<body>
+  <h2>Hello Dashboard!</h2>
+  <div>
+    <div id="load">
+    </div>
+    <table><tr><td valign="top">
+      <table class="totals" id="total" style="display: none;">
+        <tr><td>
+          <p><b>Apple Total Installs:</b> Cumulative # of times the app has been installed</p>
+          <p><b>Android Currently Installed:</b> # of unique devices where the app is currently installed</p>
+          <p><b>Android Total Users:</b> # of unique users who have installed the app</p>
+          <div id="chart_Totals" style="border: 1px solid #ccc"></div>
+        </td></tr>
+        <tr><td>
+          <div id="dashboard_Aggregate" style="border: 1px solid #ccc">
+            <div id="chart_Aggregate"></div>
+            <div id="control_Aggregate"></div>
+          </div>
+        </td></tr>
+      </table>
+      </td><td>
+      <table class="columns" id="mytable">
+      </table>
+    </td></tr></table>
+  </div>
+</body>
+</html>
