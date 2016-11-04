@@ -1,6 +1,4 @@
-#!/usr/bin/python2.4
-#
-# Copyright (C) 2010 Google Inc.
+# Copyright 2014 Google Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,12 +17,18 @@
 All exceptions defined by the library
 should be defined in this file.
 """
+from __future__ import absolute_import
 
 __author__ = 'jcgregorio@google.com (Joe Gregorio)'
 
+import json
 
-from oauth2client import util
-from oauth2client.anyjson import simplejson
+# Oauth2client < 3 has the positional helper in 'util', >= 3 has it
+# in '_helpers'.
+try:
+  from oauth2client import util
+except ImportError:
+  from oauth2client import _helpers as util
 
 
 class Error(Exception):
@@ -38,6 +42,8 @@ class HttpError(Error):
   @util.positional(3)
   def __init__(self, resp, content, uri=None):
     self.resp = resp
+    if not isinstance(content, bytes):
+        raise TypeError("HTTP content should be bytes")
     self.content = content
     self.uri = uri
 
@@ -45,9 +51,13 @@ class HttpError(Error):
     """Calculate the reason for the error from the response content."""
     reason = self.resp.reason
     try:
-      data = simplejson.loads(self.content)
-      reason = data['error']['message']
-    except (ValueError, KeyError):
+      data = json.loads(self.content.decode('utf-8'))
+      if isinstance(data, dict):
+        reason = data['error']['message']
+      elif isinstance(data, list) and len(data) > 0:
+        first_error = data[0]
+        reason = first_error['error']['message']
+    except (ValueError, KeyError, TypeError):
       pass
     if reason is None:
       reason = ''

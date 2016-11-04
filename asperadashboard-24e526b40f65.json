@@ -1,0 +1,12 @@
+{
+  "type": "service_account",
+  "project_id": "asperadashboard",
+  "private_key_id": "24e526b40f654a6c23148f72a8d60396741ee334",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC2FnMlZBGgdcrL\nEIVhuUqYIuduu1ch6jPUMFKHon6G9XsIEXVogytluwolXiqAfyVDR06Hq2PHfYEd\nk5k6nBeaW1Yv2oMmARshG5XQPa1Mg8YB20O1rGr+kSR1eTaRRh3N0vHCNmAHdeb/\nKckhUOfCVGFcwagkPvlS7M0+iG6aEtrLWfimZ+xIhpQ90q7eXkFcfM/peLHLsx82\nlp6JcQW4PN9bRmRNU4i2r/j56MaitAtiQE/Ccy527NbcdzghhPkbXXVE07FBs/YQ\nBJ+HiDjDPREZJJ/NAl3A63KzoVAYMBU9u490u2Et6Zy1wX8v5rLA16G/1vkio0eh\n/Ujti0l/AgMBAAECggEBALP06APyLEGLaMrcHxZ/y6skA9o6KFkKYAK7ZzVJcQbs\noZVNu914lXFLMzHPKO4puqgNVx1aU5ia/vo+H1f/YIxa7IkKykbLHQbRfnR6IEXY\njd7T1s08A9pnk8LN8xIMW/RJIEmy96En8w4HPBJDJWm3fynu8sAvxLUh945vw+9c\nPDV85wh+9+J95Ax5sU1ZM6XF+wx/WhwHXX0jtBjaHoeNIpbzpWiHN0rEATaYO1AP\nBDXiNtxN51sqHGG7YFLQaa68mAQe9K+gzOQtMR1zH6Hcxw5bsNiAX/AOP5hftJ3f\nSI48b2RC/hO86lyrFS/BVzNq+JaiEYTH31YpR10yS9ECgYEA2ymef1XKSmdVMl+1\nUyHxqlXG1QLzZvEicUl720M/d5xLXLuwNANIHqGInOAGhrNK2ZKmgztdVV+VpbYj\n2wt+1I3WCOiKagyLQ9LYH6OKCcHL6Khgwcl4ii0DNodlMPi+mJAJZ2LHff4XSfCa\nO8YwzqXzpLNBF0DUTDtSg333pzUCgYEA1LGHoav4/Nnv5WFCBanWeNlw5V2bN9pU\ngFg2DbJS4nSnSGE5WiUcRrdZYcxUwKQ77BQMLghRxr9ii5MM7khJzoTzeu8t1kq1\nsZxRGh7WA7r34KDAtVuyZIUr9SkhiJNmjYicMr0t2ERq9WIjjHFkWShgKptMP2bJ\nfNfzHmNDIGMCgYBcMLWrersNcUo1Vm0/+xddP5fUItmgg+6pGPAw26jm96f76jfE\nqVy9BdYhp1sXbnQd8cJ5kY9BSmP4wRV0HvHLF57hQHB5C63Jafff1ztJv2u3Ap0w\n5z79YNHpLisy3m/OXUiXZMXmCexh/gPjAQum4cgLkBvhXDPxnUKobWSvwQKBgFZr\nG3Sw7yWtVy+X6L9sVlwb3ScUdXCoIRVUwgGmps6kHyPlfOwHkAmbjZGS+Aydrksp\nihlaAAAE2wFi6ioW7QYgNt2IONOM324e2UUHqmUxnm2CY0pMy5rUERw3bgyT92Mi\nUnS7MNliUyMIkPELUX54TTqChuRr2woCpCGAq1GJAoGAOlX9kIWi1yCrmmtCXZRJ\nxKiKygWf5CWPryyPWZz8i+6AiKoWrcl5wmjnGP3bjkLMdC0i/5qO6YGCa3D3CJDY\n/G/Qg2sYoU8ROrtd8OJGlwhj7AJe2wtQl647TY3QrIliFp3cwP0Dp4ZRBtsEvxj3\nIFnjs6pghSDZl2AdlF7uxVY=\n-----END PRIVATE KEY-----\n",
+  "client_email": "asperadashboard@appspot.gserviceaccount.com",
+  "client_id": "117133010488934560676",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://accounts.google.com/o/oauth2/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/asperadashboard%40appspot.gserviceaccount.com"
+}

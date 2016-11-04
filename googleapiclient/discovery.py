@@ -1,4 +1,4 @@
-# Copyright (C) 2010 Google Inc.
+# Copyright 2014 Google Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,9 @@
 
 A client library for Google's discovery based APIs.
 """
+from __future__ import absolute_import
+import six
+from six.moves import zip
 
 __author__ = 'jcgregorio@google.com (Joe Gregorio)'
 __all__ = [
@@ -25,36 +28,41 @@ __all__ = [
     'key2param',
     ]
 
+from six import BytesIO
+from six.moves import http_client
+from six.moves.urllib.parse import urlencode, urlparse, urljoin, \
+  urlunparse, parse_qsl
 
 # Standard library imports
 import copy
+try:
+  from email.generator import BytesGenerator
+except ImportError:
+  from email.generator import Generator as BytesGenerator
 from email.mime.multipart import MIMEMultipart
 from email.mime.nonmultipart import MIMENonMultipart
+import json
 import keyword
 import logging
 import mimetypes
 import os
 import re
-import urllib
-import urlparse
-
-try:
-  from urlparse import parse_qsl
-except ImportError:
-  from cgi import parse_qsl
 
 # Third-party imports
 import httplib2
-import mimeparse
 import uritemplate
 
 # Local imports
+from googleapiclient import mimeparse
 from googleapiclient.errors import HttpError
 from googleapiclient.errors import InvalidJsonError
 from googleapiclient.errors import MediaUploadSizeError
 from googleapiclient.errors import UnacceptableMimeTypeError
 from googleapiclient.errors import UnknownApiNameOrVersion
 from googleapiclient.errors import UnknownFileType
+from googleapiclient.http import BatchHttpRequest
+from googleapiclient.http import HttpMock
+from googleapiclient.http import HttpMockSequence
 from googleapiclient.http import HttpRequest
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.http import MediaUpload
@@ -62,9 +70,16 @@ from googleapiclient.model import JsonModel
 from googleapiclient.model import MediaModel
 from googleapiclient.model import RawModel
 from googleapiclient.schema import Schemas
-from oauth2client.anyjson import simplejson
-from oauth2client.util import _add_query_parameter
-from oauth2client.util import positional
+from oauth2client.client import GoogleCredentials
+
+# Oauth2client < 3 has the positional helper in 'util', >= 3 has it
+# in '_helpers'.
+try:
+  from oauth2client.util import _add_query_parameter
+  from oauth2client.util import positional
+except ImportError:
+  from oauth2client._helpers import _add_query_parameter
+  from oauth2client._helpers import positional
 
 
 # The client library requires a version of httplib2 that supports RETRIES.
@@ -76,6 +91,9 @@ URITEMPLATE = re.compile('{[^}]*}')
 VARNAME = re.compile('[a-zA-Z0-9_-]+')
 DISCOVERY_URI = ('https://www.googleapis.com/discovery/v1/apis/'
                  '{api}/{apiVersion}/rest')
+V1_DISCOVERY_URI = DISCOVERY_URI
+V2_DISCOVERY_URI = ('https://{api}.googleapis.com/$discovery/rest?'
+                    'version={apiVersion}')
 DEFAULT_METHOD_DOC = 'A description of how to use this function'
 HTTP_PAYLOAD_METHODS = frozenset(['PUT', 'POST', 'PATCH'])
 _MEDIA_SIZE_BIT_SHIFTS = {'KB': 10, 'MB': 20, 'GB': 30, 'TB': 40}
@@ -99,6 +117,10 @@ STACK_QUERY_PARAMETER_DEFAULT_VALUE = {'type': 'string', 'location': 'query'}
 # Library-specific reserved words beyond Python keywords.
 RESERVED_WORDS = frozenset(['body'])
 
+# patch _write_lines to avoid munging '\r' into '\n'
+# ( https://bugs.python.org/issue18886 https://bugs.python.org/issue19003 )
+class _BytesGenerator(BytesGenerator):
+  _write_lines = BytesGenerator.write
 
 def fix_method_name(name):
   """Fix method names to avoid reserved word conflicts.
@@ -146,7 +168,10 @@ def build(serviceName,
           discoveryServiceUrl=DISCOVERY_URI,
           developerKey=None,
           model=None,
-          requestBuilder=HttpRequest):
+          requestBuilder=HttpRequest,
+          credentials=None,
+          cache_discovery=True,
+          cache=None):
   """Construct a Resource for interacting with an API.
 
   Construct a Resource object for interacting with an API. The serviceName and
@@ -166,6 +191,11 @@ def build(serviceName,
     model: googleapiclient.Model, converts to and from the wire format.
     requestBuilder: googleapiclient.http.HttpRequest, encapsulator for an HTTP
       request.
+    credentials: oauth2client.Credentials, credentials to be used for
+      authentication.
+    cache_discovery: Boolean, whether or not to cache the discovery doc.
+    cache: googleapiclient.discovery_cache.base.CacheBase, an optional
+      cache object for the discovery documents.
 
   Returns:
     A Resource object with methods for interacting with the service.
@@ -178,33 +208,76 @@ def build(serviceName,
   if http is None:
     http = httplib2.Http()
 
-  requested_url = uritemplate.expand(discoveryServiceUrl, params)
+  for discovery_url in (discoveryServiceUrl, V2_DISCOVERY_URI,):
+    requested_url = uritemplate.expand(discovery_url, params)
 
+    try:
+      content = _retrieve_discovery_doc(requested_url, http, cache_discovery,
+                                        cache)
+      return build_from_document(content, base=discovery_url, http=http,
+          developerKey=developerKey, model=model, requestBuilder=requestBuilder,
+          credentials=credentials)
+    except HttpError as e:
+      if e.resp.status == http_client.NOT_FOUND:
+        continue
+      else:
+        raise e
+
+  raise UnknownApiNameOrVersion(
+        "name: %s  version: %s" % (serviceName, version))
+
+
+def _retrieve_discovery_doc(url, http, cache_discovery, cache=None):
+  """Retrieves the discovery_doc from cache or the internet.
+
+  Args:
+    url: string, the URL of the discovery document.
+    http: httplib2.Http, An instance of httplib2.Http or something that acts
+      like it through which HTTP requests will be made.
+    cache_discovery: Boolean, whether or not to cache the discovery doc.
+    cache: googleapiclient.discovery_cache.base.Cache, an optional cache
+      object for the discovery documents.
+
+  Returns:
+    A unicode string representation of the discovery document.
+  """
+  if cache_discovery:
+    from . import discovery_cache
+    from .discovery_cache import base
+    if cache is None:
+      cache = discovery_cache.autodetect()
+    if cache:
+      content = cache.get(url)
+      if content:
+        return content
+
+  actual_url = url
   # REMOTE_ADDR is defined by the CGI spec [RFC3875] as the environment
   # variable that contains the network address of the client sending the
   # request. If it exists then add that to the request for the discovery
   # document to avoid exceeding the quota on discovery requests.
   if 'REMOTE_ADDR' in os.environ:
-    requested_url = _add_query_parameter(requested_url, 'userIp',
-                                         os.environ['REMOTE_ADDR'])
-  logger.info('URL being requested: %s' % requested_url)
+    actual_url = _add_query_parameter(url, 'userIp', os.environ['REMOTE_ADDR'])
+  logger.info('URL being requested: GET %s', actual_url)
 
-  resp, content = http.request(requested_url)
+  resp, content = http.request(actual_url)
 
-  if resp.status == 404:
-    raise UnknownApiNameOrVersion("name: %s  version: %s" % (serviceName,
-                                                            version))
   if resp.status >= 400:
-    raise HttpError(resp, content, uri=requested_url)
+    raise HttpError(resp, content, uri=actual_url)
 
   try:
-    service = simplejson.loads(content)
-  except ValueError, e:
+    content = content.decode('utf-8')
+  except AttributeError:
+    pass
+
+  try:
+    service = json.loads(content)
+  except ValueError as e:
     logger.error('Failed to parse as JSON: ' + content)
     raise InvalidJsonError()
-
-  return build_from_document(content, base=discoveryServiceUrl, http=http,
-      developerKey=developerKey, model=model, requestBuilder=requestBuilder)
+  if cache_discovery and cache:
+    cache.set(url, content)
+  return content
 
 
 @positional(1)
@@ -215,7 +288,8 @@ def build_from_document(
     http=None,
     developerKey=None,
     model=None,
-    requestBuilder=HttpRequest):
+    requestBuilder=HttpRequest,
+    credentials=None):
   """Create a Resource for interacting with an API.
 
   Same as `build()`, but constructs the Resource object from a discovery
@@ -236,18 +310,53 @@ def build_from_document(
     model: Model class instance that serializes and de-serializes requests and
       responses.
     requestBuilder: Takes an http request and packages it up to be executed.
+    credentials: object, credentials to be used for authentication.
 
   Returns:
     A Resource object with methods for interacting with the service.
   """
 
+  if http is None:
+    http = httplib2.Http()
+
   # future is no longer used.
   future = {}
 
-  if isinstance(service, basestring):
-    service = simplejson.loads(service)
-  base = urlparse.urljoin(service['rootUrl'], service['servicePath'])
+  if isinstance(service, six.string_types):
+    service = json.loads(service)
+
+  if  'rootUrl' not in service and (isinstance(http, (HttpMock,
+                                                      HttpMockSequence))):
+      logger.error("You are using HttpMock or HttpMockSequence without" +
+                   "having the service discovery doc in cache. Try calling " +
+                   "build() without mocking once first to populate the " +
+                   "cache.")
+      raise InvalidJsonError()
+
+  base = urljoin(service['rootUrl'], service['servicePath'])
   schema = Schemas(service)
+
+  if credentials:
+    # If credentials were passed in, we could have two cases:
+    # 1. the scopes were specified, in which case the given credentials
+    #    are used for authorizing the http;
+    # 2. the scopes were not provided (meaning the Application Default
+    #    Credentials are to be used). In this case, the Application Default
+    #    Credentials are built and used instead of the original credentials.
+    #    If there are no scopes found (meaning the given service requires no
+    #    authentication), there is no authorization of the http.
+    if (isinstance(credentials, GoogleCredentials) and
+        credentials.create_scoped_required()):
+      scopes = service.get('auth', {}).get('oauth2', {}).get('scopes', {})
+      if scopes:
+        credentials = credentials.create_scoped(list(scopes.keys()))
+      else:
+        # No need to authorize the http object
+        # if the service does not require authentication.
+        credentials = None
+
+    if credentials:
+      http = credentials.authorize(http)
 
   if model is None:
     features = service.get('features', [])
@@ -298,13 +407,13 @@ def _media_size_to_long(maxSize):
     The size as an integer value.
   """
   if len(maxSize) < 2:
-    return 0L
+    return 0
   units = maxSize[-2:].upper()
   bit_shift = _MEDIA_SIZE_BIT_SHIFTS.get(units)
   if bit_shift is not None:
-    return long(maxSize[:-2]) << bit_shift
+    return int(maxSize[:-2]) << bit_shift
   else:
-    return long(maxSize)
+    return int(maxSize)
 
 
 def _media_path_url_from_info(root_desc, path_url):
@@ -354,7 +463,7 @@ def _fix_up_parameters(method_desc, root_desc, http_method):
   parameters = method_desc.setdefault('parameters', {})
 
   # Add in the parameters common to all methods.
-  for name, description in root_desc.get('parameters', {}).iteritems():
+  for name, description in six.iteritems(root_desc.get('parameters', {})):
     parameters[name] = description
 
   # Add in undocumented query parameters.
@@ -460,6 +569,23 @@ def _fix_up_method_description(method_desc, root_desc):
   return path_url, http_method, method_id, accept, max_size, media_path_url
 
 
+def _urljoin(base, url):
+  """Custom urljoin replacement supporting : before / in url."""
+  # In general, it's unsafe to simply join base and url. However, for
+  # the case of discovery documents, we know:
+  #  * base will never contain params, query, or fragment
+  #  * url will never contain a scheme or net_loc.
+  # In general, this means we can safely join on /; we just need to
+  # ensure we end up with precisely one / joining base and url. The
+  # exception here is the case of media uploads, where url will be an
+  # absolute url.
+  if url.startswith('http://') or url.startswith('https://'):
+    return urljoin(base, url)
+  new_base = base if base.endswith('/') else base + '/'
+  new_url = url[1:] if url.startswith('/') else url
+  return new_base + new_url
+
+
 # TODO(dhermes): Convert this class to ResourceMethod and make it callable
 class ResourceMethodParameters(object):
   """Represents the parameters associated with a method.
@@ -520,7 +646,7 @@ class ResourceMethodParameters(object):
           comes from the dictionary of methods stored in the 'methods' key in
           the deserialized discovery document.
     """
-    for arg, desc in method_desc.get('parameters', {}).iteritems():
+    for arg, desc in six.iteritems(method_desc.get('parameters', {})):
       param = key2param(arg)
       self.argmap[param] = arg
 
@@ -568,12 +694,12 @@ def createMethod(methodName, methodDesc, rootDesc, schema):
   def method(self, **kwargs):
     # Don't bother with doc string, it will be over-written by createMethod.
 
-    for name in kwargs.iterkeys():
+    for name in six.iterkeys(kwargs):
       if name not in parameters.argmap:
         raise TypeError('Got an unexpected keyword argument "%s"' % name)
 
     # Remove args that have a value of None.
-    keys = kwargs.keys()
+    keys = list(kwargs.keys())
     for name in keys:
       if kwargs[name] is None:
         del kwargs[name]
@@ -582,9 +708,9 @@ def createMethod(methodName, methodDesc, rootDesc, schema):
       if name not in kwargs:
         raise TypeError('Missing required parameter "%s"' % name)
 
-    for name, regex in parameters.pattern_params.iteritems():
+    for name, regex in six.iteritems(parameters.pattern_params):
       if name in kwargs:
-        if isinstance(kwargs[name], basestring):
+        if isinstance(kwargs[name], six.string_types):
           pvalues = [kwargs[name]]
         else:
           pvalues = kwargs[name]
@@ -594,13 +720,13 @@ def createMethod(methodName, methodDesc, rootDesc, schema):
                 'Parameter "%s" value "%s" does not match the pattern "%s"' %
                 (name, pvalue, regex))
 
-    for name, enums in parameters.enum_params.iteritems():
+    for name, enums in six.iteritems(parameters.enum_params):
       if name in kwargs:
         # We need to handle the case of a repeated enum
         # name differently, since we want to handle both
         # arg='value' and arg=['value1', 'value2']
         if (name in parameters.repeated_params and
-            not isinstance(kwargs[name], basestring)):
+            not isinstance(kwargs[name], six.string_types)):
           values = kwargs[name]
         else:
           values = [kwargs[name]]
@@ -612,7 +738,7 @@ def createMethod(methodName, methodDesc, rootDesc, schema):
 
     actual_query_params = {}
     actual_path_params = {}
-    for key, value in kwargs.iteritems():
+    for key, value in six.iteritems(kwargs):
       to_type = parameters.param_types.get(key, 'string')
       # For repeated parameters we cast each member of the list.
       if key in parameters.repeated_params and type(value) == type([]):
@@ -640,14 +766,14 @@ def createMethod(methodName, methodDesc, rootDesc, schema):
         actual_path_params, actual_query_params, body_value)
 
     expanded_url = uritemplate.expand(pathUrl, params)
-    url = urlparse.urljoin(self._baseUrl, expanded_url + query)
+    url = _urljoin(self._baseUrl, expanded_url + query)
 
     resumable = None
     multipart_boundary = ''
 
     if media_filename:
       # Ensure we end up with a valid MediaUpload object.
-      if isinstance(media_filename, basestring):
+      if isinstance(media_filename, six.string_types):
         (media_mime_type, encoding) = mimetypes.guess_type(media_filename)
         if media_mime_type is None:
           raise UnknownFileType(media_filename)
@@ -661,12 +787,12 @@ def createMethod(methodName, methodDesc, rootDesc, schema):
         raise TypeError('media_filename must be str or MediaUpload.')
 
       # Check the maxSize
-      if maxSize > 0 and media_upload.size() > maxSize:
+      if media_upload.size() is not None and media_upload.size() > maxSize > 0:
         raise MediaUploadSizeError("Media larger than: %s" % maxSize)
 
       # Use the media path uri for media uploads
       expanded_url = uritemplate.expand(mediaPathUrl, params)
-      url = urlparse.urljoin(self._baseUrl, expanded_url + query)
+      url = _urljoin(self._baseUrl, expanded_url + query)
       if media_upload.resumable():
         url = _add_query_parameter(url, 'uploadType', 'resumable')
 
@@ -699,14 +825,19 @@ def createMethod(methodName, methodDesc, rootDesc, schema):
           payload = media_upload.getbytes(0, media_upload.size())
           msg.set_payload(payload)
           msgRoot.attach(msg)
-          body = msgRoot.as_string()
+          # encode the body: note that we can't use `as_string`, because
+          # it plays games with `From ` lines.
+          fp = BytesIO()
+          g = _BytesGenerator(fp, mangle_from_=False)
+          g.flatten(msgRoot, unixfrom=False)
+          body = fp.getvalue()
 
           multipart_boundary = msgRoot.get_boundary()
           headers['content-type'] = ('multipart/related; '
                                      'boundary="%s"') % multipart_boundary
           url = _add_query_parameter(url, 'uploadType', 'multipart')
 
-    logger.info('URL being requested: %s' % url)
+    logger.info('URL being requested: %s %s' % (httpMethod,url))
     return self._requestBuilder(self._http,
                                 model.response,
                                 url,
@@ -721,10 +852,10 @@ def createMethod(methodName, methodDesc, rootDesc, schema):
     docs.append('Args:\n')
 
   # Skip undocumented params and params common to all methods.
-  skip_parameters = rootDesc.get('parameters', {}).keys()
+  skip_parameters = list(rootDesc.get('parameters', {}).keys())
   skip_parameters.extend(STACK_QUERY_PARAMETERS)
 
-  all_args = parameters.argmap.keys()
+  all_args = list(parameters.argmap.keys())
   args_ordered = [key2param(s) for s in methodDesc.get('parameterOrder', [])]
 
   # Move body to the front of the line.
@@ -797,24 +928,24 @@ Returns:
     # Retrieve nextPageToken from previous_response
     # Use as pageToken in previous_request to create new request.
 
-    if 'nextPageToken' not in previous_response:
+    if 'nextPageToken' not in previous_response or not previous_response['nextPageToken']:
       return None
 
     request = copy.copy(previous_request)
 
     pageToken = previous_response['nextPageToken']
-    parsed = list(urlparse.urlparse(request.uri))
+    parsed = list(urlparse(request.uri))
     q = parse_qsl(parsed[4])
 
     # Find and remove old 'pageToken' value from URI
     newq = [(key, value) for (key, value) in q if key != 'pageToken']
     newq.append(('pageToken', pageToken))
-    parsed[4] = urllib.urlencode(newq)
-    uri = urlparse.urlunparse(parsed)
+    parsed[4] = urlencode(newq)
+    uri = urlunparse(parsed)
 
     request.uri = uri
 
-    logger.info('URL being requested: %s' % uri)
+    logger.info('URL being requested: %s %s' % (methodName,uri))
 
     return request
 
@@ -894,9 +1025,30 @@ class Resource(object):
     self._add_next_methods(self._resourceDesc, self._schema)
 
   def _add_basic_methods(self, resourceDesc, rootDesc, schema):
+    # If this is the root Resource, add a new_batch_http_request() method.
+    if resourceDesc == rootDesc:
+      batch_uri = '%s%s' % (
+        rootDesc['rootUrl'], rootDesc.get('batchPath', 'batch'))
+      def new_batch_http_request(callback=None):
+        """Create a BatchHttpRequest object based on the discovery document.
+
+        Args:
+          callback: callable, A callback to be called for each response, of the
+            form callback(id, response, exception). The first parameter is the
+            request id, and the second is the deserialized response object. The
+            third is an apiclient.errors.HttpError exception object if an HTTP
+            error occurred while processing the request, or None if no error
+            occurred.
+
+        Returns:
+          A BatchHttpRequest object based on the discovery document.
+        """
+        return BatchHttpRequest(callback=callback, batch_uri=batch_uri)
+      self._set_dynamic_attr('new_batch_http_request', new_batch_http_request)
+
     # Add basic methods to Resource
     if 'methods' in resourceDesc:
-      for methodName, methodDesc in resourceDesc['methods'].iteritems():
+      for methodName, methodDesc in six.iteritems(resourceDesc['methods']):
         fixedMethodName, method = createMethod(
             methodName, methodDesc, rootDesc, schema)
         self._set_dynamic_attr(fixedMethodName,
@@ -935,7 +1087,7 @@ class Resource(object):
 
         return (methodName, methodResource)
 
-      for methodName, methodDesc in resourceDesc['resources'].iteritems():
+      for methodName, methodDesc in six.iteritems(resourceDesc['resources']):
         fixedMethodName, method = createResourceMethod(methodName, methodDesc)
         self._set_dynamic_attr(fixedMethodName,
                                method.__get__(self, self.__class__))
@@ -945,7 +1097,7 @@ class Resource(object):
     # Look for response bodies in schema that contain nextPageToken, and methods
     # that take a pageToken parameter.
     if 'methods' in resourceDesc:
-      for methodName, methodDesc in resourceDesc['methods'].iteritems():
+      for methodName, methodDesc in six.iteritems(resourceDesc['methods']):
         if 'response' in methodDesc:
           responseSchema = methodDesc['response']
           if '$ref' in responseSchema:
